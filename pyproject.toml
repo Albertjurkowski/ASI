@@ -1,0 +1,21 @@
+[tool.kedro]
+package_name = "asi_projekt"
+project_name = "ASI Projekt"
+kedro_init_version = "0.19.9"
+
+[build-system]
+requires = ["setuptools"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "asi_projekt"
+version = "0.1.0"
+dependencies = [
+    "kedro~=0.19.9",
+    "kedro-datasets",
+    "scikit-learn",
+    "pandas",
+    "numpy",
+]
+[tool.kedro_telemetry]
+project_id = "b55de00d5c7e45cbb8b0aa271b9f1f1f"

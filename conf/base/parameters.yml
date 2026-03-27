@@ -1,0 +1,17 @@
+# conf/base/tmp.yml
+
+target_column: "Transported"
+
+drop_columns:
+  - PassengerId
+  - Name
+  - Cabin
+
+split:
+  test_size: 0.30
+  val_ratio: 0.50
+  random_state: 42
+
+model:
+  n_estimators: 100
+  random_state: 42
