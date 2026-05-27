@@ -82,6 +82,9 @@ def split_data(
     Returns:
         Krotka zawierająca X_train, X_val, X_test, y_train, y_val, y_test.
     """
+    # Normalizacja nazw kolumn: quoted_name (SQLAlchemy) → czysty str
+    data.columns = [f"{c}" for c in data.columns]
+
     target = parameters["target_column"]
     split_params = parameters["split"]
 
