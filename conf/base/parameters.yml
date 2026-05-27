@@ -15,3 +15,9 @@ model:
   n_estimators: 200
   max_depth: null
   random_state: 42
+
+# --- SPRINT 4: AutoGluon ---
+automl:
+  presets: "medium_quality"
+  time_limit: 120
+  eval_metric: "accuracy"
