@@ -46,11 +46,20 @@ asi_projekt/
 # aktywuj środowisko
 .venv\Scripts\activate
 
+#linux source .venv/bin/activate
+
+
 # uruchom pipeline
 kedro run
 
 # sprawdź metryki
 type data\08_reporting\metrics.json
+
+# uruchomienie api
+uvicorn api.main:app --host 127.0.0.1 --port 8000
+
+# uruchomienie ui
+streamlit run streamlit_app.py
 ```
 
 ## Pipeline
