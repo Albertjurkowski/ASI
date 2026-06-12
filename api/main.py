@@ -55,15 +55,45 @@ def predict(features: SpaceshipFeatures) -> PredictionResponse:
     try:
         input_df = pd.DataFrame([features.model_dump()])
         model = models["predictor"]
-        prediction = model.predict(input_df)
-        value = float(prediction.iloc[0] if hasattr(prediction, "iloc") else prediction[0])
+        model_type = models.get("type", "unknown")
+        model_name = model_type
 
-        model_name = models.get("type", "unknown")
-        if models.get("type") == "autogluon":
+        # Try to use predict_proba to get the probability of being transported
+        if model_type == "autogluon":
             try:
                 model_name = model.get_model_best()
             except Exception:
-                model_name = "autogluon"
+                pass
+            
+            try:
+                prob = model.predict_proba(input_df)
+                if isinstance(prob, pd.DataFrame):
+                    # Check columns for class 1 or True
+                    if 1 in prob.columns:
+                        value = float(prob[1].iloc[0])
+                    elif True in prob.columns:
+                        value = float(prob[True].iloc[0])
+                    else:
+                        value = float(prob.iloc[0, 1])
+                else:
+                    value = float(prob.iloc[0])
+            except Exception as exc:
+                logger.warning("Błąd AutoGluon predict_proba: %s. Używam predict.", exc)
+                prediction = model.predict(input_df)
+                value = float(prediction.iloc[0] if hasattr(prediction, "iloc") else prediction[0])
+        else:
+            if hasattr(model, "predict_proba"):
+                try:
+                    prob = model.predict_proba(input_df)
+                    # For binary classification, class 1 is at index 1
+                    value = float(prob[0][1])
+                except Exception as exc:
+                    logger.warning("Błąd predict_proba: %s. Używam predict.", exc)
+                    prediction = model.predict(input_df)
+                    value = float(prediction.iloc[0] if hasattr(prediction, "iloc") else prediction[0])
+            else:
+                prediction = model.predict(input_df)
+                value = float(prediction.iloc[0] if hasattr(prediction, "iloc") else prediction[0])
 
     except Exception as exc:
         logger.error("Błąd predykcji: %s", exc)
