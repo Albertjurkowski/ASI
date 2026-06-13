@@ -9,6 +9,22 @@ API_URL = "http://127.0.0.1:8000"
 HOMEPLANET_MAP = {0: "Earth", 1: "Europa", 2: "Mars"}
 DESTINATION_MAP = {0: "55 Cancri e", 1: "PSO J318.5-22", 2: "TRAPPIST-1e"}
 
+
+@st.cache_resource
+def get_http_session() -> requests.Session:
+    """Tworzy i cache'uje sesję HTTP do komunikacji z API."""
+    return requests.Session()
+
+
+@st.cache_data(show_spinner=False)
+def get_prediction(payload: dict) -> dict:
+    """Wysyła zapytanie predykcyjne do API i cache'uje wynik w pamięci podręcznej Streamlit."""
+    session = get_http_session()
+    r = session.post(f"{API_URL}/predict", json=payload, timeout=10)
+    r.raise_for_status()
+    return r.json()
+
+
 st.set_page_config(
     page_title="🚀 Spaceship Titanic – Predykcja",
     page_icon="🚀",
@@ -23,7 +39,8 @@ with st.sidebar:
 
     if st.button("🔄 Sprawdź status", use_container_width=True):
         try:
-            r = requests.get(f"{API_URL}/health", timeout=5)
+            session = get_http_session()
+            r = session.get(f"{API_URL}/health", timeout=5)
             data = r.json()
             st.session_state["health"] = data
         except Exception as e:
@@ -119,25 +136,21 @@ with tab_predict:
 
         with st.spinner("Wysyłam zapytanie do API..."):
             try:
-                r = requests.post(f"{API_URL}/predict", json=payload, timeout=10)
-                if r.status_code == 200:
-                    result = r.json()
-                    pred = result["prediction"]
-                    model_name = result["model"]
-                    transported = pred >= 0.5
+                result = get_prediction(payload)
+                pred = result["prediction"]
+                model_name = result["model"]
+                transported = pred >= 0.5
 
-                    if transported:
-                        st.success("🌌 **TRANSPORTOWANY**")
-                        st.balloons()
-                    else:
-                        st.error("🚫 **NIE TRANSPORTOWANY**")
-
-                    # Store in history
-                    if "history" not in st.session_state:
-                        st.session_state["history"] = []
-                    st.session_state["history"].append({**payload, "prediction": pred, "model": model_name})
+                if transported:
+                    st.success("🌌 **TRANSPORTOWANY**")
+                    st.balloons()
                 else:
-                    st.error(f"Błąd API ({r.status_code}): {r.text}")
+                    st.error("🚫 **NIE TRANSPORTOWANY**")
+
+                # Store in history
+                if "history" not in st.session_state:
+                    st.session_state["history"] = []
+                st.session_state["history"].append({**payload, "prediction": pred, "model": model_name})
             except requests.ConnectionError:
                 st.error("❌ Nie udało się połączyć z API. Upewnij się, że serwer działa na `http://127.0.0.1:8000`")
             except Exception as e:
@@ -223,11 +236,8 @@ with tab_explore:
         for i, val in enumerate(values):
             payload = {**defaults, feature_to_explore: val}
             try:
-                r = requests.post(f"{API_URL}/predict", json=payload, timeout=10)
-                if r.status_code == 200:
-                    pred = r.json()["prediction"]
-                else:
-                    pred = None
+                result = get_prediction(payload)
+                pred = result["prediction"]
             except Exception:
                 pred = None
             results.append({"value": val, "prediction": pred})
