@@ -27,3 +27,4 @@ wandb/
 
 conf/local/**
 !conf/local/credentials.example.yml
+.venv
