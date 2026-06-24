@@ -19,4 +19,10 @@ def register_pipelines() -> dict[str, Pipeline]:
     except ImportError:
         pipelines["full"] = data_processing
 
+    try:
+        from asi_projekt.pipelines.synthetic import create_pipeline as synthetic_pipeline
+        pipelines["synthetic"] = synthetic_pipeline()
+    except ImportError:
+        pass
+
     return pipelines

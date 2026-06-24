@@ -1,10 +1,17 @@
-import streamlit as st
-import requests
+import os
+import sqlite3
+from pathlib import Path
 import pandas as pd
+import requests
+import streamlit as st
 import plotly.express as px
 import plotly.graph_objects as go
 
-API_URL = "http://127.0.0.1:8000"
+# Configurations
+API_URL = os.environ.get("API_URL", "http://127.0.0.1:8000")
+DB_PATH = Path(os.environ.get("DB_PATH", "data/01_raw/dataset.db"))
+DB_TABLE = os.environ.get("DB_TABLE", "spaceship_titanic")
+SDV_DROP_COLUMNS = ["PassengerId", "Name", "Cabin"]
 
 HOMEPLANET_MAP = {0: "Earth", 1: "Europa", 2: "Mars"}
 DESTINATION_MAP = {0: "55 Cancri e", 1: "PSO J318.5-22", 2: "TRAPPIST-1e"}
@@ -25,37 +32,65 @@ def get_prediction(payload: dict) -> dict:
     return r.json()
 
 
+@st.cache_data
+def load_data() -> pd.DataFrame:
+    with sqlite3.connect(DB_PATH) as conn:
+        return pd.read_sql(f"SELECT * FROM {DB_TABLE}", conn)
+
+
+def _prepare_for_sdv(df: pd.DataFrame) -> pd.DataFrame:
+    clean = df.copy()
+    clean.columns = [str(c) for c in clean.columns]
+    drop = [c for c in SDV_DROP_COLUMNS if c in clean.columns]
+    if drop:
+        clean = clean.drop(columns=drop)
+    for col in clean.columns:
+        clean[col] = pd.to_numeric(clean[col], errors="ignore")
+    return clean
+
+
+@st.cache_resource
+def fit_synthesizer(real_data: pd.DataFrame):
+    from sdv.metadata import Metadata
+    from sdv.single_table import GaussianCopulaSynthesizer
+
+    metadata = Metadata.detect_from_dataframe(real_data)
+    synth = GaussianCopulaSynthesizer(metadata)
+    synth.fit(real_data)
+    return synth
+
+
 st.set_page_config(
-    page_title="🚀 Spaceship Titanic – Predykcja",
+    page_title="🚀 ASI Spaceship Titanic — Dashboard",
     page_icon="🚀",
     layout="wide",
     initial_sidebar_state="expanded",
 )
 
-st.title("🚀 Spaceship Titanic – Prediction Dashboard")
+st.title("🚀 ASI Spaceship Titanic — Dashboard MLOps")
 
+# Sidebar
 with st.sidebar:
     st.header("⚙️ Status API")
-
+    st.caption(f"API_URL = `{API_URL}`")
     if st.button("🔄 Sprawdź status", use_container_width=True):
         try:
             session = get_http_session()
             r = session.get(f"{API_URL}/health", timeout=5)
-            data = r.json()
-            st.session_state["health"] = data
-        except Exception as e:
-            st.session_state["health"] = {"error": str(e)}
+            st.session_state["health"] = r.json()
+        except Exception as exc:
+            st.session_state["health"] = {"error": str(exc)}
 
     health = st.session_state.get("health")
     if health and "error" not in health:
-        st.success(f"Status: **{health['status']}**")
-        st.info(f"Model: **{health['model_type']}**")
-        loaded = "✅ Tak" if health["model_loaded"] else "❌ Nie"
+        st.success(f"Status: **{health.get('status')}**")
+        st.info(f"Model: **{health.get('model_type')}**")
+        loaded = "✅ Tak" if health.get("model_loaded") else "❌ Nie"
         st.info(f"Załadowany: **{loaded}**")
     elif health and "error" in health:
-        st.error(f"Błąd: {health['error']}")
+        st.error(f"Brak połączenia: {health['error']}")
     else:
-        st.warning("Kliknij przycisk, aby sprawdzić status API")
+        st.warning("Kliknij, aby sprawdzić status API.")
 
     st.divider()
     st.subheader("📡 Endpointy")
@@ -63,12 +98,16 @@ with st.sidebar:
     st.code("POST /predict", language="text")
     st.markdown(f"📖 [Dokumentacja Swagger]({API_URL}/docs)")
 
-tab_predict, tab_batch, tab_explore = st.tabs([
+# Tabs
+tab_predict, tab_batch, tab_explore, tab_data, tab_synth = st.tabs([
     "🎯 Predykcja pojedyncza",
     "📊 Analiza wsadowa",
     "🔬 Eksploracja cech",
+    "🗄️ Dane z bazy",
+    "🧪 Dane syntetyczne",
 ])
 
+# Tab 1: Single Prediction
 with tab_predict:
     st.subheader("Wprowadź cechy pasażera")
 
@@ -142,20 +181,33 @@ with tab_predict:
                 transported = pred >= 0.5
 
                 if transported:
-                    st.success("🌌 **TRANSPORTOWANY**")
+                    st.success(f"🌌 **TRANSPORTOWANY** (p = {pred:.3f})")
                     st.balloons()
                 else:
-                    st.error("🚫 **NIE TRANSPORTOWANY**")
+                    st.error(f"🚫 **NIE TRANSPORTOWANY** (p = {pred:.3f})")
+                st.caption(f"Model: {model_name}")
 
                 # Store in history
                 if "history" not in st.session_state:
                     st.session_state["history"] = []
                 st.session_state["history"].append({**payload, "prediction": pred, "model": model_name})
-            except requests.ConnectionError:
-                st.error("❌ Nie udało się połączyć z API. Upewnij się, że serwer działa na `http://127.0.0.1:8000`")
+            except requests.exceptions.HTTPError as he:
+                r = he.response
+                if r.status_code == 422:
+                    st.error("Błędne dane wejściowe (walidacja Pydantic).")
+                    st.json(r.json())
+                elif r.status_code == 503:
+                    st.error("API działa, ale model nie jest załadowany. Uruchom `kedro run` i zrestartuj API.")
+                else:
+                    st.error(f"Błąd API ({r.status_code}): {r.text}")
+            except requests.exceptions.ConnectionError:
+                st.error(f"❌ Nie można połączyć się z API pod {API_URL}. Czy `uvicorn api.main:app` jest uruchomione?")
+            except requests.exceptions.Timeout:
+                st.error("⏱️ Przekroczono czas oczekiwania na odpowiedź API.")
             except Exception as e:
                 st.error(f"Błąd: {e}")
 
+# Tab 2: Batch Analysis (Prediction History)
 with tab_batch:
     st.subheader("📊 Analiza wsadowa – historia predykcji")
 
@@ -193,6 +245,7 @@ with tab_batch:
             st.session_state["history"] = []
             st.rerun()
 
+# Tab 3: Feature Exploration
 with tab_explore:
     st.subheader("🔬 Eksploracja wpływu cechy na predykcję")
     st.caption("Wybierz jedną cechę do zbadania – pozostałe zostaną ustawione na wartości domyślne.")
@@ -287,5 +340,73 @@ with tab_explore:
             with st.expander("📋 Dane szczegółowe"):
                 st.dataframe(df_explore, use_container_width=True, hide_index=True)
 
+# Tab 4: Database Data
+with tab_data:
+    st.header("Dane z bazy (SQLite)")
+    try:
+        df = load_data()
+    except Exception as exc:
+        st.error(f"Nie udało się wczytać danych z bazy `{DB_PATH}`: {exc}")
+        df = None
+
+    if df is not None:
+        st.write(f"Liczba rekordów: **{len(df)}** · liczba kolumn: **{df.shape[1]}**")
+        st.dataframe(df.head(100), use_container_width=True)
+
+        st.subheader("Statystyki opisowe")
+        st.dataframe(df.describe(include="all"), use_container_width=True)
+
+        st.subheader("Rozkład wybranej kolumny")
+        numeric_cols = list(df.select_dtypes("number").columns)
+        if numeric_cols:
+            column = st.selectbox("Kolumna", numeric_cols)
+            st.bar_chart(df[column].value_counts().sort_index())
+        else:
+            st.info("Brak kolumn numerycznych do wizualizacji.")
+
+# Tab 5: Synthetic Data (SDV)
+with tab_synth:
+    st.header("Dane syntetyczne (SDV)")
+    try:
+        df = load_data()
+    except Exception as exc:
+        st.error(f"Nie udało się wczytać danych z bazy: {exc}")
+        df = None
+
+    if df is not None:
+        real_for_sdv = _prepare_for_sdv(df)
+        st.caption("Kolumny użyte do generowania: " + ", ".join(real_for_sdv.columns))
+
+        n_samples = st.number_input(
+            "Liczba rekordów do wygenerowania", 100, 10_000, 1000, step=100
+        )
+
+        if st.button("Generuj dane syntetyczne", type="primary"):
+            with st.spinner("Trenowanie synthesizera i generowanie..."):
+                synth = fit_synthesizer(real_for_sdv)  # cache'owane — fit tylko raz
+                st.session_state["synthetic"] = synth.sample(num_rows=int(n_samples))
+
+        if "synthetic" in st.session_state:  # przetrwało rerun
+            synthetic = st.session_state["synthetic"]
+            st.success(f"Wygenerowano {len(synthetic)} rekordów.")
+
+            col_real, col_synth = st.columns(2)
+            with col_real:
+                st.subheader("Oryginał (statystyki)")
+                st.dataframe(real_for_sdv.describe(), use_container_width=True)
+            with col_synth:
+                st.subheader("Syntetyczne (statystyki)")
+                st.dataframe(synthetic.describe(), use_container_width=True)
+
+            st.subheader("Podgląd danych syntetycznych")
+            st.dataframe(synthetic.head(100), use_container_width=True)
+
+            st.download_button(
+                "⬇️ Pobierz dane syntetyczne (CSV)",
+                synthetic.to_csv(index=False).encode("utf-8"),
+                file_name="synthetic_data.csv",
+                mime="text/csv",
+            )
+
 st.divider()
-st.caption("Spaceship Titanic Prediction Dashboard · ASI Projekt · Sprint 6")
+st.caption("ASI Spaceship Titanic · Sprint 6 · Streamlit + FastAPI + SDV")
