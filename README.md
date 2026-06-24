@@ -60,6 +60,9 @@ uvicorn api.main:app --host 127.0.0.1 --port 8000
 
 # uruchomienie ui
 streamlit run streamlit_app.py
+
+# uruchomienie danych syntetycznych
+WANDB_MODE=offline kedro run --pipeline=synthetic
 ```
 
 ## Pipeline
