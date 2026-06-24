@@ -1,19 +1,35 @@
 import os
 import sqlite3
 from pathlib import Path
-
 import pandas as pd
 import requests
 import streamlit as st
+import plotly.express as px
+import plotly.graph_objects as go
 
+# Configurations
 API_URL = os.environ.get("API_URL", "http://127.0.0.1:8000")
 DB_PATH = Path(os.environ.get("DB_PATH", "data/01_raw/dataset.db"))
 DB_TABLE = os.environ.get("DB_TABLE", "spaceship_titanic")
-
 SDV_DROP_COLUMNS = ["PassengerId", "Name", "Cabin"]
 
 HOMEPLANET_MAP = {0: "Earth", 1: "Europa", 2: "Mars"}
 DESTINATION_MAP = {0: "55 Cancri e", 1: "PSO J318.5-22", 2: "TRAPPIST-1e"}
+
+
+@st.cache_resource
+def get_http_session() -> requests.Session:
+    """Tworzy i cache'uje sesję HTTP do komunikacji z API."""
+    return requests.Session()
+
+
+@st.cache_data(show_spinner=False)
+def get_prediction(payload: dict) -> dict:
+    """Wysyła zapytanie predykcyjne do API i cache'uje wynik w pamięci podręcznej Streamlit."""
+    session = get_http_session()
+    r = session.post(f"{API_URL}/predict", json=payload, timeout=10)
+    r.raise_for_status()
+    return r.json()
 
 
 @st.cache_data
@@ -53,12 +69,14 @@ st.set_page_config(
 
 st.title("🚀 ASI Spaceship Titanic — Dashboard MLOps")
 
+# Sidebar
 with st.sidebar:
     st.header("⚙️ Status API")
     st.caption(f"API_URL = `{API_URL}`")
     if st.button("🔄 Sprawdź status", use_container_width=True):
         try:
-            r = requests.get(f"{API_URL}/health", timeout=5)
+            session = get_http_session()
+            r = session.get(f"{API_URL}/health", timeout=5)
             st.session_state["health"] = r.json()
         except Exception as exc:
             st.session_state["health"] = {"error": str(exc)}
@@ -67,22 +85,34 @@ with st.sidebar:
     if health and "error" not in health:
         st.success(f"Status: **{health.get('status')}**")
         st.info(f"Model: **{health.get('model_type')}**")
-        st.info("Załadowany: " + ("✅ Tak" if health.get("model_loaded") else "❌ Nie"))
+        loaded = "✅ Tak" if health.get("model_loaded") else "❌ Nie"
+        st.info(f"Załadowany: **{loaded}**")
     elif health and "error" in health:
         st.error(f"Brak połączenia: {health['error']}")
     else:
         st.warning("Kliknij, aby sprawdzić status API.")
 
-tab_app, tab_data, tab_synth = st.tabs([
-    "🎯 Aplikacja",
+    st.divider()
+    st.subheader("📡 Endpointy")
+    st.code("GET  /health", language="text")
+    st.code("POST /predict", language="text")
+    st.markdown(f"📖 [Dokumentacja Swagger]({API_URL}/docs)")
+
+# Tabs
+tab_predict, tab_batch, tab_explore, tab_data, tab_synth = st.tabs([
+    "🎯 Predykcja pojedyncza",
+    "📊 Analiza wsadowa",
+    "🔬 Eksploracja cech",
     "🗄️ Dane z bazy",
     "🧪 Dane syntetyczne",
 ])
 
-with tab_app:
-    st.header("Aplikacja — predykcja transportu pasażera")
+# Tab 1: Single Prediction
+with tab_predict:
+    st.subheader("Wprowadź cechy pasażera")
 
     col1, col2, col3 = st.columns(3)
+
     with col1:
         st.markdown("**🌍 Dane osobowe**")
         home_planet = st.selectbox("Planeta pochodzenia", options=[0, 1, 2],
@@ -90,12 +120,14 @@ with tab_app:
         destination = st.selectbox("Cel podróży", options=[0, 1, 2],
                                    format_func=lambda x: DESTINATION_MAP[x])
         age = st.slider("Wiek", 0.0, 120.0, 30.0, step=1.0)
+
     with col2:
         st.markdown("**🛏️ Status**")
         cryo_sleep = st.selectbox("Kriogeniczny sen", options=[0, 1],
-                                  format_func=lambda x: "Tak" if x else "Nie")
+                                   format_func=lambda x: "Tak" if x else "Nie")
         vip = st.selectbox("VIP", options=[0, 1],
                            format_func=lambda x: "Tak" if x else "Nie")
+
     with col3:
         st.markdown("**💰 Wydatki na pokładzie**")
         room_service = st.number_input("Room Service", min_value=0.0, value=0.0, step=50.0)
@@ -104,6 +136,29 @@ with tab_app:
         spa = st.number_input("Spa", min_value=0.0, value=0.0, step=50.0)
         vr_deck = st.number_input("VR Deck", min_value=0.0, value=0.0, step=50.0)
 
+    total_spending = room_service + food_court + shopping_mall + spa + vr_deck
+
+    spending_data = pd.DataFrame({
+        "Kategoria": ["Room Service", "Food Court", "Shopping Mall", "Spa", "VR Deck"],
+        "Kwota": [room_service, food_court, shopping_mall, spa, vr_deck],
+    })
+
+    if total_spending > 0:
+        fig_spend = px.pie(
+            spending_data, names="Kategoria", values="Kwota",
+            title="Rozkład wydatków pasażera",
+            color_discrete_sequence=px.colors.sequential.Purples_r,
+            hole=0.45,
+        )
+        st.plotly_chart(fig_spend, use_container_width=True)
+
+    m1, m2, m3, m4 = st.columns(4)
+    m1.metric("Planeta", HOMEPLANET_MAP[home_planet])
+    m2.metric("Wiek", f"{age:.0f}")
+    m3.metric("Kriosien", "Tak" if cryo_sleep else "Nie")
+    m4.metric("Suma wydatków", f"${total_spending:,.0f}")
+
+    st.divider()
     if st.button("🚀 Wykonaj predykcję", type="primary", use_container_width=True):
         payload = {
             "HomePlanet": home_planet,
@@ -117,33 +172,175 @@ with tab_app:
             "Spa": spa,
             "VRDeck": vr_deck,
         }
+
         with st.spinner("Wysyłam zapytanie do API..."):
             try:
-                r = requests.post(f"{API_URL}/predict", json=payload, timeout=10)
-                if r.status_code == 200:
-                    result = r.json()
-                    pred = result["prediction"]
-                    transported = pred >= 0.5
-                    if transported:
-                        st.success(f"🌌 **TRANSPORTOWANY** (p = {pred:.3f})")
-                        st.balloons()
-                    else:
-                        st.error(f"🚫 **NIE TRANSPORTOWANY** (p = {pred:.3f})")
-                    st.caption(f"Model: {result.get('model')}")
-                elif r.status_code == 422:
+                result = get_prediction(payload)
+                pred = result["prediction"]
+                model_name = result["model"]
+                transported = pred >= 0.5
+
+                if transported:
+                    st.success(f"🌌 **TRANSPORTOWANY** (p = {pred:.3f})")
+                    st.balloons()
+                else:
+                    st.error(f"🚫 **NIE TRANSPORTOWANY** (p = {pred:.3f})")
+                st.caption(f"Model: {model_name}")
+
+                # Store in history
+                if "history" not in st.session_state:
+                    st.session_state["history"] = []
+                st.session_state["history"].append({**payload, "prediction": pred, "model": model_name})
+            except requests.exceptions.HTTPError as he:
+                r = he.response
+                if r.status_code == 422:
                     st.error("Błędne dane wejściowe (walidacja Pydantic).")
                     st.json(r.json())
                 elif r.status_code == 503:
-                    st.error("API działa, ale model nie jest załadowany. "
-                             "Uruchom `kedro run` i zrestartuj API.")
+                    st.error("API działa, ale model nie jest załadowany. Uruchom `kedro run` i zrestartuj API.")
                 else:
                     st.error(f"Błąd API ({r.status_code}): {r.text}")
             except requests.exceptions.ConnectionError:
-                st.error(f"❌ Nie można połączyć się z API pod {API_URL}. "
-                         "Czy `uvicorn api.main:app` jest uruchomione?")
+                st.error(f"❌ Nie można połączyć się z API pod {API_URL}. Czy `uvicorn api.main:app` jest uruchomione?")
             except requests.exceptions.Timeout:
                 st.error("⏱️ Przekroczono czas oczekiwania na odpowiedź API.")
+            except Exception as e:
+                st.error(f"Błąd: {e}")
 
+# Tab 2: Batch Analysis (Prediction History)
+with tab_batch:
+    st.subheader("📊 Analiza wsadowa – historia predykcji")
+
+    history = st.session_state.get("history", [])
+
+    if not history:
+        st.info("Brak danych. Wykonaj kilka predykcji w zakładce **Predykcja pojedyncza**, aby zobaczyć wyniki tutaj.")
+    else:
+        df_hist = pd.DataFrame(history)
+        df_hist["Wynik"] = df_hist["prediction"].apply(lambda x: "Transportowany" if x >= 0.5 else "Nie transportowany")
+
+        c1, c2 = st.columns(2)
+
+        with c1:
+            st.markdown("#### Historia predykcji")
+            st.dataframe(df_hist, use_container_width=True, hide_index=True)
+
+        with c2:
+            counts = df_hist["Wynik"].value_counts().reset_index()
+            counts.columns = ["Wynik", "Liczba"]
+            fig_res = px.pie(counts, names="Wynik", values="Liczba",
+                             color_discrete_sequence=["#667eea", "#f5576c"],
+                             title="Rozkład wyników predykcji", hole=0.4)
+            st.plotly_chart(fig_res, use_container_width=True)
+
+        fig_dist = px.histogram(
+            df_hist, x="prediction", nbins=20,
+            title="Rozkład wartości predykcji",
+            color_discrete_sequence=["#667eea"],
+            labels={"prediction": "Wartość predykcji"},
+        )
+        st.plotly_chart(fig_dist, use_container_width=True)
+
+        if st.button("🗑️ Wyczyść historię"):
+            st.session_state["history"] = []
+            st.rerun()
+
+# Tab 3: Feature Exploration
+with tab_explore:
+    st.subheader("🔬 Eksploracja wpływu cechy na predykcję")
+    st.caption("Wybierz jedną cechę do zbadania – pozostałe zostaną ustawione na wartości domyślne.")
+
+    feature_to_explore = st.selectbox("Wybierz cechę", [
+        "Age", "RoomService", "FoodCourt", "ShoppingMall", "Spa", "VRDeck",
+        "HomePlanet", "CryoSleep", "Destination", "VIP"
+    ])
+
+    defaults = {
+        "HomePlanet": 0, "CryoSleep": 0, "Destination": 2,
+        "Age": 30.0, "VIP": 0, "RoomService": 0.0,
+        "FoodCourt": 0.0, "ShoppingMall": 0.0, "Spa": 0.0, "VRDeck": 0.0,
+    }
+
+    RANGES = {
+        "Age": [float(x) for x in range(0, 81, 5)],
+        "RoomService": [0, 50, 100, 200, 500, 1000, 2000, 5000],
+        "FoodCourt": [0, 50, 100, 200, 500, 1000, 2000, 5000],
+        "ShoppingMall": [0, 50, 100, 200, 500, 1000, 2000, 5000],
+        "Spa": [0, 50, 100, 200, 500, 1000, 2000, 5000],
+        "VRDeck": [0, 50, 100, 200, 500, 1000, 2000, 5000],
+        "HomePlanet": [0, 1, 2],
+        "CryoSleep": [0, 1],
+        "Destination": [0, 1, 2],
+        "VIP": [0, 1],
+    }
+
+    LABEL_MAPS = {
+        "HomePlanet": HOMEPLANET_MAP,
+        "CryoSleep": {0: "Nie", 1: "Tak"},
+        "Destination": DESTINATION_MAP,
+        "VIP": {0: "Nie", 1: "Tak"},
+    }
+
+    if st.button("📈 Uruchom eksplorację", type="primary", use_container_width=True):
+        values = RANGES[feature_to_explore]
+        results = []
+
+        progress = st.progress(0, text="Odpytuję API...")
+        for i, val in enumerate(values):
+            payload = {**defaults, feature_to_explore: val}
+            try:
+                result = get_prediction(payload)
+                pred = result["prediction"]
+            except Exception:
+                pred = None
+            results.append({"value": val, "prediction": pred})
+            progress.progress((i + 1) / len(values), text=f"Przetwarzam {i+1}/{len(values)}...")
+
+        progress.empty()
+        df_explore = pd.DataFrame(results).dropna()
+
+        if df_explore.empty:
+            st.error("Nie udało się uzyskać predykcji. Sprawdź czy API działa.")
+        else:
+            if feature_to_explore in LABEL_MAPS:
+                df_explore["label"] = df_explore["value"].map(LABEL_MAPS[feature_to_explore])
+                x_col = "label"
+            else:
+                x_col = "value"
+
+            is_categorical = feature_to_explore in LABEL_MAPS
+
+            if is_categorical:
+                fig = px.bar(
+                    df_explore, x=x_col, y="prediction",
+                    title=f"Wpływ cechy '{feature_to_explore}' na predykcję",
+                    labels={x_col: feature_to_explore, "prediction": "Predykcja"},
+                    color="prediction",
+                    color_continuous_scale=["#f5576c", "#667eea"],
+                )
+            else:
+                fig = go.Figure()
+                fig.add_trace(go.Scatter(
+                    x=df_explore["value"], y=df_explore["prediction"],
+                    mode="lines+markers",
+                    line=dict(color="#667eea", width=3),
+                    marker=dict(size=8, color="#764ba2"),
+                    fill="tozeroy",
+                    fillcolor="rgba(102,126,234,0.1)",
+                ))
+                fig.update_layout(
+                    title=f"Wpływ cechy '{feature_to_explore}' na predykcję",
+                    xaxis_title=feature_to_explore,
+                    yaxis_title="Predykcja",
+                )
+
+            fig.update_layout(yaxis=dict(range=[0, 1]))
+            st.plotly_chart(fig, use_container_width=True)
+
+            with st.expander("📋 Dane szczegółowe"):
+                st.dataframe(df_explore, use_container_width=True, hide_index=True)
+
+# Tab 4: Database Data
 with tab_data:
     st.header("Dane z bazy (SQLite)")
     try:
@@ -167,6 +364,7 @@ with tab_data:
         else:
             st.info("Brak kolumn numerycznych do wizualizacji.")
 
+# Tab 5: Synthetic Data (SDV)
 with tab_synth:
     st.header("Dane syntetyczne (SDV)")
     try:
