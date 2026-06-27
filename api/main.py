@@ -61,10 +61,15 @@ def predict(features: SpaceshipFeatures) -> PredictionResponse:
         # Try to use predict_proba to get the probability of being transported
         if model_type == "autogluon":
             try:
-                model_name = model.get_model_best()
-            except Exception:
-                pass
-            
+                if hasattr(model, "get_model_best"):
+                    model_name = model.get_model_best()
+                elif getattr(model, "model_best", None):
+                    model_name = model.model_best
+                else:
+                    model_name = model.leaderboard(silent=True).iloc[0]["model"]
+            except Exception as exc:
+                logger.warning("Nie udało się ustalić najlepszego modelu AutoGluon: %s", exc)
+
             try:
                 prob = model.predict_proba(input_df)
                 if isinstance(prob, pd.DataFrame):
